@@ -166,19 +166,30 @@
   .task-time{ font-size:11px; color:var(--text-dim); }
   .cal-link{ font-size:11px; color:var(--ok); display:flex; align-items:center; gap:4px; }
   .del-btn{ color:var(--text-dim); flex-shrink:0; padding:2px; margin-top:1px; }
+  .task-actions{ display:flex; flex-direction:column; align-items:center; gap:12px; flex-shrink:0; margin-top:1px; }
+  .edit-btn{ color:var(--text-dim); }
+  .drag-handle{
+    color:var(--text-dim); flex-shrink:0; padding:4px 2px; margin-top:1px;
+    touch-action:none; cursor:grab; display:flex; align-items:center;
+  }
+  .task.dragging{ opacity:.75; box-shadow:0 10px 24px rgba(0,0,0,.55); background:var(--surface-2); position:relative; z-index:30; }
+  .edit-input{
+    width:100%; background:transparent; border:none; border-bottom:1px solid var(--accent);
+    outline:none; color:var(--text); font-size:15px; font-family:inherit; padding:0 0 2px;
+  }
 
   .empty{ text-align:center; color:var(--text-dim); font-size:13.5px; margin-top:60px; line-height:1.6; }
 
   /* ---- Toast (solo mensajes informativos, sin acción) ---- */
   #toast{
-    position:fixed; bottom:calc(26px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%) translateY(120%);
+    position:fixed; bottom:calc(90px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%) translateY(140%);
     background:#1d1d20; border:1px solid var(--border); border-radius:20px;
     padding:12px 18px; display:flex; align-items:center;
     box-shadow:0 8px 24px rgba(0,0,0,.5); transition:transform .25s ease; z-index:40;
     max-width:calc(100% - 32px);
   }
   #toast.show{ transform:translateX(-50%) translateY(0); }
-  #toast span{ font-size:13.5px; }
+  #toast span{ font-size:13.5px; line-height:1.4; }
 
   #voiceBanner{
     position:fixed; top:0; left:0; right:0; background:var(--accent); color:#0a0a0a;
@@ -311,7 +322,7 @@
   // ======================================================================
   // CONFIGURACIÓN: pega aquí tu Client ID de Google Cloud (ver instrucciones)
   // ======================================================================
-  const GOOGLE_CLIENT_ID = '508432279926-av67kk57r67ptuu2gtlgquems0oipuan.apps.googleusercontent.com';
+  const GOOGLE_CLIENT_ID = 'PON_AQUI_TU_CLIENT_ID.apps.googleusercontent.com';
   const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 
   const STORAGE_KEY = 'todo-borja-state';
@@ -520,8 +531,8 @@
   function stripAccents(s){ return s.normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
 
   function findTime(text){
-    let m = text.match(/a\s+las?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)?/i);
-    if(!m) m = text.match(/\b(\d{1,2}):(\d{2})\s*(h|am|pm)?\b/i);
+    let m = text.match(/a\s+las?\s+(\d{1,2})(?:[:.,](\d{2}))?\s*(am|pm|h)?/i);
+    if(!m) m = text.match(/\b(\d{1,2})[:.,](\d{2})\s*(h|am|pm)?\b/i);
     if(!m) m = text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
     if(!m) return null;
     let hour = parseInt(m[1],10);
@@ -714,6 +725,7 @@
   async function addTask(text){
     text = text.trim();
     if(!text) return;
+    if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
     pushHistory();
     const task = {
       id: Date.now() + '-' + Math.random().toString(36).slice(2,7),
@@ -738,7 +750,8 @@
         task.done = true;
         task.completedAt = Date.now();
         saveState(); render();
-        toast(matched.length ? 'Añadido a Calendar e invitación enviada a ' + matched.map(c=>c.name).join(', ') + '.' : 'Añadido a Google Calendar y tarea completada.');
+        const when = fmtEventDate(ev);
+        toast(matched.length ? 'Agendado el ' + when + '. Invitación enviada a ' + matched.map(c=>c.name).join(', ') + '.' : 'Agendado el ' + when + '.');
       } else {
         toast('No pude crear el evento en Calendar. Revisa la conexión.');
       }
@@ -771,6 +784,12 @@
     const d = new Date(ts);
     return d.toLocaleDateString('es-ES', {day:'2-digit',month:'2-digit'}) + ' · ' + d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
   }
+  function fmtEventDate(dt){
+    const d = dt.date;
+    const datePart = d.toLocaleDateString('es-ES', {day:'numeric',month:'long'});
+    if(dt.allDay) return datePart;
+    return datePart + ' a las ' + d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
+  }
 
   function render(){
     const list = $('list');
@@ -779,7 +798,11 @@
     state.tasks.forEach(t=>{
       const row = document.createElement('div');
       row.className = 'task' + (t.done ? ' done' : '');
+      row.dataset.id = t.id;
       row.innerHTML = `
+        <div class="drag-handle" title="Arrastrar para reordenar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/></svg>
+        </div>
         <div class="check">
           <svg viewBox="0 0 24 24" fill="none" stroke="#0a0a0a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
         </div>
@@ -791,23 +814,118 @@
             ${t.invitees && t.invitees.length ? `<span class="task-invitees">Invitados: ${t.invitees.join(', ')}</span>` : ''}
           </div>
         </div>
-        <div class="del-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <div class="task-actions">
+          <button class="del-btn" title="Eliminar">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <button class="edit-btn" title="Editar">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
         </div>
       `;
       row.querySelector('.task-text').textContent = t.text;
       row.querySelector('.check').addEventListener('click', ()=>toggleTask(t.id));
       row.querySelector('.del-btn').addEventListener('click', ()=>deleteTask(t.id));
+      row.querySelector('.edit-btn').addEventListener('click', ()=>startEdit(t.id, row));
+      row.querySelector('.drag-handle').addEventListener('pointerdown', (e)=>onHandleDown(e, row));
       list.appendChild(row);
     });
   }
 
+  function startEdit(id, row){
+    const task = state.tasks.find(x=>x.id===id);
+    if(!task) return;
+    const textDiv = row.querySelector('.task-text');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'edit-input';
+    input.value = task.text;
+    input.maxLength = 140;
+    textDiv.replaceWith(input);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    let done = false;
+    function commit(){
+      if(done) return; done = true;
+      const newText = input.value.trim();
+      if(newText && newText !== task.text){
+        pushHistory();
+        task.text = newText;
+        saveState();
+      }
+      render();
+    }
+    function cancel(){
+      if(done) return; done = true;
+      render();
+    }
+    input.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter'){ input.blur(); }
+      else if(e.key === 'Escape'){ cancel(); }
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  // ---------- arrastrar para reordenar ----------
+  let dragEl = null;
+  let dragBeforeSnapshot = null;
+  function onHandleDown(e, row){
+    e.preventDefault();
+    dragEl = row;
+    dragBeforeSnapshot = snapshot();
+    row.classList.add('dragging');
+    try{ e.target.setPointerCapture(e.pointerId); }catch(err){}
+    document.addEventListener('pointermove', onDragMove);
+    document.addEventListener('pointerup', onDragEnd, { once:true });
+    document.addEventListener('pointercancel', onDragEnd, { once:true });
+  }
+  function onDragMove(e){
+    if(!dragEl) return;
+    const list = $('list');
+    const y = e.clientY;
+    const rows = Array.from(list.children);
+    for(const sib of rows){
+      if(sib === dragEl) continue;
+      const r = sib.getBoundingClientRect();
+      const mid = r.top + r.height/2;
+      const dragFollowsSib = !!(sib.compareDocumentPosition(dragEl) & Node.DOCUMENT_POSITION_FOLLOWING);
+      if(y < mid && dragFollowsSib){
+        list.insertBefore(dragEl, sib);
+        break;
+      }
+      if(y > mid && !dragFollowsSib){
+        list.insertBefore(dragEl, sib.nextSibling);
+        break;
+      }
+    }
+  }
+  function onDragEnd(){
+    document.removeEventListener('pointermove', onDragMove);
+    if(!dragEl) return;
+    dragEl.classList.remove('dragging');
+    const list = $('list');
+    const newOrderIds = Array.from(list.children).map(r=>r.dataset.id);
+    const changed = newOrderIds.join(',') !== dragBeforeSnapshot.map(t=>t.id).join(',');
+    if(changed){
+      undoStack.push(dragBeforeSnapshot);
+      if(undoStack.length > 25) undoStack.shift();
+      redoStack = [];
+      updateHistoryButtons();
+      const byId = {};
+      state.tasks.forEach(t=>{ byId[t.id] = t; });
+      state.tasks = newOrderIds.map(id=>byId[id]).filter(Boolean);
+      saveState();
+    }
+    dragEl = null;
+    dragBeforeSnapshot = null;
+  }
+
   // ---------- toast informativo ----------
-  function toast(message){
+  function toast(message, duration){
     clearTimeout(toastTimer);
     $('toastText').textContent = message;
     $('toast').classList.add('show');
-    toastTimer = setTimeout(()=>{ $('toast').classList.remove('show'); }, 4000);
+    toastTimer = setTimeout(()=>{ $('toast').classList.remove('show'); }, duration || 5500);
   }
 
   // ---------- voz ----------
@@ -826,9 +944,9 @@
     recognition.onresult = (e)=>{
       const text = e.results[0][0].transcript;
       $('taskInput').value = text;
-      $('addBtn').disabled = !text.trim();
-      const auto = new URLSearchParams(location.search).get('voice') === '1';
-      if(auto){ addTask(text); $('taskInput').value=''; $('addBtn').disabled = true; }
+      addTask(text);
+      $('taskInput').value = '';
+      $('addBtn').disabled = true;
     };
   }
   function startListening(){ if(!recognition || listening) return; try{ recognition.start(); }catch(e){} }
